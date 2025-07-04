@@ -54,21 +54,18 @@ jobs:
         with:
           name: proxies-json
 
-      - name: Test proxy và tạo file kết quả cho ${{ matrix.country }}
+      - name: Test proxy và upload cho ${{ matrix.country }}
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
           jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json > "proxies_${country_upper}.json"
           > "proxy/proxy_${country_upper}.txt"
-
           test_proxy() {
             host=$1
             port=$2
             nc -z -w3 "$host" "$port" &>/dev/null
           }
-
-          alive_count=0
-
+          
           while read -r proxy; do
             host=$(echo $proxy | jq -r .host)
             port=$(echo $proxy | jq -r .port)
@@ -77,21 +74,12 @@ jobs:
             if test_proxy "$host" "$port"; then
               echo "$host:$port ✅"
               echo "tg://proxy?server=$host&port=$port&secret=$secret" >> "proxy/proxy_${country_upper}.txt"
-              ((alive_count++))
             else
               echo "$host:$port ❌"
             fi
           done < "proxies_${country_upper}.json"
-
-          if [ "$alive_count" -eq 0 ]; then
-            echo "⚠️ Không có proxy nào sống cho $country_upper, không upload."
-            rm -f "proxy/proxy_${country_upper}.txt"
-          else
-            echo "Có $alive_count proxy sống, file đã được lưu."
-          fi
-
-      - name: Upload proxy file nếu có
-        if: hashFiles('proxy/proxy_${{ matrix.country }}.txt') != ''
+        
+      - name: Upload proxy file
         uses: actions/upload-artifact@v4
         with:
           name: proxy-${{ matrix.country }}
@@ -118,13 +106,6 @@ jobs:
         run: |
           mkdir txts
           find proxy -type f -name "*.txt" -exec cp {} txts/ \;
-
-          count=$(ls txts | wc -l)
-          if [ "$count" -eq 0 ]; then
-            echo "⚠️ Không có file proxy nào sống, dừng gửi Telegram."
-            exit 0
-          fi
-
       - name: Zip chỉ các file .txt
         run: |
           current_date_safe=$(date +"%d-%m-%Y")
@@ -132,7 +113,6 @@ jobs:
           zip "../Proxy[${current_date_safe}].zip" *.txt
           cd ..
           ls -lh "Proxy[${current_date_safe}].zip"
-
       - name: Gửi Proxy Zip lên Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -143,6 +123,10 @@ jobs:
           message="Update MTProto Proxy $current_date_display | Fetch From [mtpro.xyz](https://mtpro.xyz/mtproto)"
           file_real="Proxy[${current_date_safe}].zip"
           file_display="Proxy[${current_date_display}].zip"
+          if [ ! -f "$file_real" ]; then
+            echo "Lỗi: Không tìm thấy file zip $file_real"
+            exit 1
+          fi
           IFS=',' read -ra CHAT_ID_LIST <<< "$TELEGRAM_CHAT_IDS"
           for chat_id in "${CHAT_ID_LIST[@]}"; do
             echo "Gửi cho Chat ID $chat_id"
