@@ -72,7 +72,7 @@ jobs:
           test_proxy() {
             host=$1
             port=$2
-            timeout 3 bash -c "</dev/tcp/$host/$port" &>/dev/null && echo "alive" || echo "dead"
+            nc -z -w3 $host $port && echo "alive" || echo "dead"
           }
 
           while read -r proxy; do
@@ -115,7 +115,7 @@ jobs:
 
       - name: Zip chỉ các file .txt
         run: |
-          current_date_safe=$(date +"%d-%m-%Y")
+          current_date_safe=$(TZ=Asia/Ho_Chi_Minh date +"%d-%m-%Y")
           cd txts
           zip "../Proxy[${current_date_safe}].zip" *.txt
           cd ..
@@ -126,8 +126,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
         run: |
-          current_date_display=$(date +"%d/%m/%Y")
-          current_date_safe=$(date +"%d-%m-%Y")
+          current_date_display=$(TZ=Asia/Ho_Chi_Minh date +"%d/%m/%Y")
+          current_date_safe=$(TZ=Asia/Ho_Chi_Minh date +"%d-%m-%Y")
           message="Update MTProto Proxy $current_date_display | Fetch From [mtpro.xyz](https://mtpro.xyz/mtproto)"
           file_real="Proxy[${current_date_safe}].zip"
           file_display="Proxy[${current_date_display}].zip"
