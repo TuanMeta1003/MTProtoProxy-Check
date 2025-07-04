@@ -1,0 +1,151 @@
+name: Fetch MTProto Proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: "Danh sách mã country cách nhau bởi dấu phẩy, ví dụ: SG,US,DE. Để trống lấy tất cả"
+        required: false
+
+  schedule:
+    - cron: '0 17 * * *' # 0h sáng UTC+7
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Fetch proxies & prepare matrix
+        id: set-matrix
+        run: |
+          curl -s 'https://mtpro.xyz/api/?type=mtproto' -o proxies.json
+
+          COUNTRIES="${{ github.event.inputs.countries }}"
+
+          if [ -z "$COUNTRIES" ]; then
+            countries=$(jq -r '.[].country' proxies.json | sort | uniq | tr '\n' ',' | sed 's/,$//')
+          else
+            countries="$COUNTRIES"
+          fi
+
+          echo "Countries: $countries"
+          echo "matrix={\"country\":[\"$(echo $countries | sed 's/,/\",\"/g')\"]}" >> $GITHUB_OUTPUT
+
+      - name: Upload proxies.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxies-json
+          path: proxies.json
+
+  fetch-proxy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl netcat-openbsd
+
+      - name: Download proxies.json
+        uses: actions/download-artifact@v4
+        with:
+          name: proxies-json
+
+      - name: Test proxy và upload cho ${{ matrix.country }}
+        run: |
+          mkdir -p proxy
+          country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
+
+          jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json > "proxies_${country_upper}.json"
+
+          > "proxy/proxy_${country_upper}.txt"
+
+          test_proxy() {
+            host=$1
+            port=$2
+            timeout 3 bash -c "</dev/tcp/$host/$port" &>/dev/null && echo "alive" || echo "dead"
+          }
+
+          while read -r proxy; do
+            host=$(echo $proxy | jq -r .host)
+            port=$(echo $proxy | jq -r .port)
+            secret=$(echo $proxy | jq -r .secret)
+            status=$(test_proxy $host $port)
+            if [ "$status" = "alive" ]; then
+              echo "tg://proxy?server=$host&port=$port&secret=$secret" >> "proxy/proxy_${country_upper}.txt"
+            fi
+          done < "proxies_${country_upper}.json"
+
+      - name: Upload proxy file
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-${{ matrix.country }}
+          path: proxy/proxy_${{ matrix.country }}.txt
+
+  zip-and-send:
+    needs: fetch-proxy
+    runs-on: ubuntu-latest
+    if: ${{ success() && github.event.inputs.countries == '' }}
+
+    steps:
+      - name: Download tất cả Artifact từng country
+        uses: actions/download-artifact@v4
+        with:
+          path: proxy
+
+      - name: Download proxies.json (không đưa vào zip)
+        uses: actions/download-artifact@v4
+        with:
+          name: proxies-json
+          path: proxies_json
+
+      - name: Gom tất cả file txt ra cùng thư mục
+        run: |
+          mkdir txts
+          find proxy -type f -name "*.txt" -exec cp {} txts/ \;
+
+      - name: Zip chỉ các file .txt
+        run: |
+          current_date_safe=$(date +"%d-%m-%Y")
+          cd txts
+          zip "../Proxy[${current_date_safe}].zip" *.txt
+          cd ..
+          ls -lh "Proxy[${current_date_safe}].zip"
+
+      - name: Gửi Proxy Zip lên Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: |
+          current_date_display=$(date +"%d/%m/%Y")
+          current_date_safe=$(date +"%d-%m-%Y")
+          message="Update MTProto Proxy $current_date_display | Fetch From [mtpro.xyz](https://mtpro.xyz/mtproto)"
+          file_real="Proxy[${current_date_safe}].zip"
+          file_display="Proxy[${current_date_display}].zip"
+
+          if [ ! -f "$file_real" ]; then
+            echo "Lỗi: Không tìm thấy file zip $file_real"
+            exit 1
+          fi
+
+          IFS=',' read -ra CHAT_ID_LIST <<< "$TELEGRAM_CHAT_IDS"
+
+          for chat_id in "${CHAT_ID_LIST[@]}"; do
+            echo "Gửi cho Chat ID $chat_id"
+
+            curl -s -F chat_id="${chat_id}" \
+              -F caption="${message}" \
+              -F parse_mode="Markdown" \
+              -F document=@"$file_real" \
+              -F filename="$file_display" \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument"
+          done
