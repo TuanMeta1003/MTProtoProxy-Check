@@ -55,6 +55,7 @@ jobs:
           name: proxies-json
 
       - name: Test proxy và upload cho ${{ matrix.country }}
+        id: test-proxy
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
@@ -86,10 +87,14 @@ jobs:
           if [ "$alive_count" -eq 0 ]; then
             echo "⚠️ Không có proxy nào sống cho $country_upper, không upload."
             rm -f "proxy/proxy_${country_upper}.txt"
+            echo "should_upload=false" >> $GITHUB_OUTPUT
+          else
+            echo "Có $alive_count proxy sống, tiến hành upload."
+            echo "should_upload=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload proxy file nếu có
-        if: hashFiles('proxy/proxy_${{ matrix.country }}.txt') != ''
+        if: steps.test-proxy.outputs.should_upload == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: proxy-${{ matrix.country }}
