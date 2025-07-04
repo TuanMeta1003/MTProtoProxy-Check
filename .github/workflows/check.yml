@@ -60,7 +60,7 @@ jobs:
         with:
           name: proxies-json
 
-            - name: Kiểm tra proxy hoạt động bằng bash cho ${{ matrix.country }}
+      - name: Kiểm tra proxy hoạt động bằng bash cho ${{ matrix.country }}
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
