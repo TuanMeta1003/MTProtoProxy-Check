@@ -60,30 +60,39 @@ jobs:
         with:
           name: proxies-json
 
-      - name: Test proxy và upload cho ${{ matrix.country }}
+      - name: Kiểm tra proxy hoạt động bằng bash cho ${{ matrix.country }}
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
 
-          jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json > "proxies_${country_upper}.json"
+          jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json \
+          | jq -r '.host + " " + (.port | tostring) + " " + .secret' > proxy_list.txt
 
           > "proxy/proxy_${country_upper}.txt"
 
-          test_proxy() {
+          check_proxy_mtproto() {
             host=$1
             port=$2
-            nc -z -w3 $host $port && echo "alive" || echo "dead"
+            secret=$3
+
+            echo -ne '\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee\xee' \
+            | timeout 5 nc $host $port >/dev/null 2>&1 && echo "alive" || echo "dead"
           }
 
-          while read -r proxy; do
-            host=$(echo $proxy | jq -r .host)
-            port=$(echo $proxy | jq -r .port)
-            secret=$(echo $proxy | jq -r .secret)
-            status=$(test_proxy $host $port)
+          while read -r line; do
+            host=$(echo $line | awk '{print $1}')
+            port=$(echo $line | awk '{print $2}')
+            secret=$(echo $line | awk '{print $3}')
+
+            status=$(check_proxy_mtproto $host $port $secret)
+
             if [ "$status" = "alive" ]; then
-              echo "tg://proxy?server=$host&port=$port&secret=$secret" >> "proxy/proxy_${country_upper}.txt"
+              echo "tg://proxy?server=$host&port=$port&secret=$secret" >> proxy/proxy_${country_upper}.txt
+              echo "Proxy $host:$port OK"
+            else
+              echo "Proxy $host:$port DEAD"
             fi
-          done < "proxies_${country_upper}.json"
+          done < proxy_list.txt
 
       - name: Upload proxy file
         uses: actions/upload-artifact@v4
