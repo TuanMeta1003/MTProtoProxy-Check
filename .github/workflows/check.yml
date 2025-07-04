@@ -20,23 +20,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq curl
-
       - name: Fetch proxies & prepare matrix
         id: set-matrix
         run: |
           curl -s 'https://mtpro.xyz/api/?type=mtproto' -o proxies.json
-
           COUNTRIES="${{ github.event.inputs.countries }}"
-
           if [ -z "$COUNTRIES" ]; then
             countries=$(jq -r '.[].country' proxies.json | sort | uniq | tr '\n' ',' | sed 's/,$//')
           else
             countries="$COUNTRIES"
           fi
-
           echo "Countries: $countries"
           echo "matrix={\"country\":[\"$(echo $countries | sed 's/,/\",\"/g')\"]}" >> $GITHUB_OUTPUT
-
       - name: Upload proxies.json
         uses: actions/upload-artifact@v4
         with:
@@ -53,75 +48,48 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl netcat-openbsd python3
-
+          sudo apt-get install -y jq curl netcat-openbsd
       - name: Download proxies.json
         uses: actions/download-artifact@v4
         with:
           name: proxies-json
 
-      - name: Tạo file kiểm tra MTProto Packet
-        run: |
-          cat <<EOF > check_mtproto.py
-          import socket
-          import sys
-
-          host = sys.argv[1]
-          port = int(sys.argv[2])
-
-          init_packet = bytes.fromhex('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
-
-          try:
-              with socket.create_connection((host, port), timeout=5) as sock:
-                  sock.sendall(init_packet)
-                  resp = sock.recv(4)
-                  if resp:
-                      print("alive")
-                  else:
-                      print("dead")
-          except Exception:
-              print("dead")
-          EOF
-
-      - name: Kiểm tra proxy cho ${{ matrix.country }}
+      - name: Test proxy và upload cho ${{ matrix.country }}
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
-
-          jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json \
-          | jq -r '.host + " " + (.port | tostring) + " " + .secret' > proxy_list.txt
-
+          jq -c --arg country "$country_upper" '.[] | select(.country == $country)' proxies.json > "proxies_${country_upper}.json"
           > "proxy/proxy_${country_upper}.txt"
 
-          check_proxy_tls() {
+          test_proxy() {
             host=$1
             port=$2
-
-            printf '\x16\x03\x01\x00\x31\x01\x00\x00\x2d\x03\x03\x53\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b' \
-            | timeout 5 nc $host $port | head -c 1 | grep -q . && echo "alive" || echo "dead"
+            nc -z -w3 "$host" "$port" &>/dev/null
           }
 
-          while read -r line; do
-            host=$(echo $line | awk '{print $1}')
-            port=$(echo $line | awk '{print $2}')
-            secret=$(echo $line | awk '{print $3}')
+          alive_count=0
 
-            tls_status=$(check_proxy_tls $host $port)
+          while read -r proxy; do
+            host=$(echo $proxy | jq -r .host)
+            port=$(echo $proxy | jq -r .port)
+            secret=$(echo $proxy | jq -r .secret)
 
-            if [ "$tls_status" = "alive" ]; then
-              real_status=$(python3 check_mtproto.py $host $port)
-              if [ "$real_status" = "alive" ]; then
-                echo "tg://proxy?server=$host&port=$port&secret=$secret" >> proxy/proxy_${country_upper}.txt
-                echo "Proxy $host:$port OK ✅"
-              else
-                echo "Proxy $host:$port DEAD (MTProto)"
-              fi
+            if test_proxy "$host" "$port"; then
+              echo "$host:$port ✅"
+              echo "tg://proxy?server=$host&port=$port&secret=$secret" >> "proxy/proxy_${country_upper}.txt"
+              ((alive_count++))
             else
-              echo "Proxy $host:$port DEAD (TLS)"
+              echo "$host:$port ❌"
             fi
-          done < proxy_list.txt
+          done < "proxies_${country_upper}.json"
 
-      - name: Upload proxy file
+          if [ "$alive_count" -eq 0 ]; then
+            echo "⚠️ Không có proxy nào sống cho $country_upper, không upload."
+            rm -f "proxy/proxy_${country_upper}.txt"
+          fi
+
+      - name: Upload proxy file nếu có
+        if: hashFiles('proxy/proxy_${{ matrix.country }}.txt') != ''
         uses: actions/upload-artifact@v4
         with:
           name: proxy-${{ matrix.country }}
@@ -149,9 +117,15 @@ jobs:
           mkdir txts
           find proxy -type f -name "*.txt" -exec cp {} txts/ \;
 
+          count=$(ls txts | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "⚠️ Không có file proxy nào sống, dừng gửi Telegram."
+            exit 0
+          fi
+
       - name: Zip chỉ các file .txt
         run: |
-          current_date_safe=$(TZ=Asia/Ho_Chi_Minh date +"%d-%m-%Y")
+          current_date_safe=$(date +"%d-%m-%Y")
           cd txts
           zip "../Proxy[${current_date_safe}].zip" *.txt
           cd ..
@@ -162,22 +136,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
         run: |
-          current_date_display=$(TZ=Asia/Ho_Chi_Minh date +"%d/%m/%Y")
-          current_date_safe=$(TZ=Asia/Ho_Chi_Minh date +"%d-%m-%Y")
+          current_date_display=$(date +"%d/%m/%Y")
+          current_date_safe=$(date +"%d-%m-%Y")
           message="Update MTProto Proxy $current_date_display | Fetch From [mtpro.xyz](https://mtpro.xyz/mtproto)"
           file_real="Proxy[${current_date_safe}].zip"
           file_display="Proxy[${current_date_display}].zip"
-
-          if [ ! -f "$file_real" ]; then
-            echo "Lỗi: Không tìm thấy file zip $file_real"
-            exit 1
-          fi
-
           IFS=',' read -ra CHAT_ID_LIST <<< "$TELEGRAM_CHAT_IDS"
-
           for chat_id in "${CHAT_ID_LIST[@]}"; do
             echo "Gửi cho Chat ID $chat_id"
-
             curl -s -F chat_id="${chat_id}" \
               -F caption="${message}" \
               -F parse_mode="Markdown" \
