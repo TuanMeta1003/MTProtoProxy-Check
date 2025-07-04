@@ -122,12 +122,12 @@ jobs:
               real_status=$(python3 check_proxy.py $API_ID $API_HASH $host $port $secret)
               if [[ "$real_status" == *"alive"* ]]; then
                 echo "tg://proxy?server=$host&port=$port&secret=$secret" >> proxy/proxy_${country_upper}.txt
-                echo "Proxy $host:$port OK ✅"
+                echo "$host:$port ✅"
               else
-                echo "Proxy $host:$port DEAD (Telethon)"
+                echo "$host:$port ❌ (Telethon)"
               fi
             else
-              echo "Proxy $host:$port DEAD (TLS)"
+              echo "$host:$port ❌ (TLS)"
             fi
           done < proxy_list.txt
 
