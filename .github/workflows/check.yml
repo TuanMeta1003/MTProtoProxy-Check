@@ -91,7 +91,7 @@ jobs:
           fi
 
       - name: Upload proxy file nếu có
-        if: ${{ exists('proxy/proxy_' + matrix.country + '.txt') }}
+        if: hashFiles('proxy/proxy_${{ matrix.country }}.txt') != ''
         uses: actions/upload-artifact@v4
         with:
           name: proxy-${{ matrix.country }}
