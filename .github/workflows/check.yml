@@ -53,47 +53,37 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl netcat-openbsd python3 python3-pip
-          pip3 install telethon
+          sudo apt-get install -y jq curl netcat-openbsd python3
 
       - name: Download proxies.json
         uses: actions/download-artifact@v4
         with:
           name: proxies-json
 
-      - name: Tạo file kiểm tra proxy Telethon
+      - name: Tạo file kiểm tra MTProto Packet
         run: |
-          cat <<EOF > check_proxy.py
-          from telethon import TelegramClient
+          cat <<EOF > check_mtproto.py
+          import socket
           import sys
-          import asyncio
 
-          api_id = int(sys.argv[1])
-          api_hash = sys.argv[2]
-          proxy_host = sys.argv[3]
-          proxy_port = int(sys.argv[4])
-          proxy_secret = sys.argv[5]
+          host = sys.argv[1]
+          port = int(sys.argv[2])
 
-          async def check_proxy():
-              try:
-                  async with TelegramClient('anon', api_id, api_hash, proxy=('mtproxy', proxy_host, proxy_port, proxy_secret)) as client:
-                      await client.connect()
-                      if not await client.is_user_authorized():
-                          print("alive")
-                      else:
-                          print("alive")
-              except (OSError, ConnectionError):
-                  print("dead")
-              except Exception as e:
-                  print(f"dead {e}")
+          init_packet = bytes.fromhex('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
 
-          asyncio.run(check_proxy())
+          try:
+              with socket.create_connection((host, port), timeout=5) as sock:
+                  sock.sendall(init_packet)
+                  resp = sock.recv(4)
+                  if resp:
+                      print("alive")
+                  else:
+                      print("dead")
+          except Exception:
+              print("dead")
           EOF
 
       - name: Kiểm tra proxy cho ${{ matrix.country }}
-        env:
-          API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           mkdir -p proxy
           country_upper=$(echo "${{ matrix.country }}" | tr '[:lower:]' '[:upper:]')
@@ -103,10 +93,9 @@ jobs:
 
           > "proxy/proxy_${country_upper}.txt"
 
-          check_proxy_mtproto() {
+          check_proxy_tls() {
             host=$1
             port=$2
-            secret=$3
 
             printf '\x16\x03\x01\x00\x31\x01\x00\x00\x2d\x03\x03\x53\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b\x4b' \
             | timeout 5 nc $host $port | head -c 1 | grep -q . && echo "alive" || echo "dead"
@@ -117,15 +106,15 @@ jobs:
             port=$(echo $line | awk '{print $2}')
             secret=$(echo $line | awk '{print $3}')
 
-            status=$(check_proxy_mtproto $host $port $secret)
+            tls_status=$(check_proxy_tls $host $port)
 
-            if [ "$status" = "alive" ]; then
-              real_status=$(python3 check_proxy.py $API_ID $API_HASH $host $port $secret)
-              if [[ "$real_status" == *"alive"* ]]; then
+            if [ "$tls_status" = "alive" ]; then
+              real_status=$(python3 check_mtproto.py $host $port)
+              if [ "$real_status" = "alive" ]; then
                 echo "tg://proxy?server=$host&port=$port&secret=$secret" >> proxy/proxy_${country_upper}.txt
                 echo "Proxy $host:$port OK ✅"
               else
-                echo "Proxy $host:$port DEAD (Telethon)"
+                echo "Proxy $host:$port DEAD (MTProto)"
               fi
             else
               echo "Proxy $host:$port DEAD (TLS)"
